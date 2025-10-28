@@ -8,10 +8,23 @@ Public API:
   - print_async_trace(trace_data): Print formatted trace
   - print_trace(): Convenience function (collect + print)
 
-Trace data structure:
+Trace data structure (flat list of frames):
   {
-    'task_chain': [list of task info dicts],
-    'current_stack': [list of frame info dicts],
+    'frames': [
+      {
+        'type': 'task_root' | 'task_created' | 'call',
+        'name': str,
+        'indent': int,
+        'is_current': bool (optional),
+        'line': int (for 'call' type),
+        'code': str (for 'call' type),
+        'filename': str (for 'call' type, full file path),
+        'creator': str (for 'task_created' type),
+        'task_name': str (for 'task_created' type),
+        'task': <Task object> (for task types),
+        ...
+      }
+    ],
     'current_task': <Task object>
   }
 """
@@ -40,7 +53,8 @@ def traced_create_task(coro, *args, **kwargs):
             call_trace.insert(0, {
                 'name': frame.name,
                 'line': frame.lineno,
-                'code': frame.line
+                'code': frame.line,
+                'filename': frame.filename
             })
     
     task = _orig_create_task(coro, *args, **kwargs)
@@ -73,10 +87,10 @@ async def main():
     print_trace()
 
 def collect_async_trace():
-    """Collect structured async call trace data."""
+    """Collect structured async call trace data as a flat list of frames."""
     current_task = asyncio.current_task()
     
-    # Build the task chain hierarchy
+    # Build the task chain hierarchy first
     task_chain = []
     task = current_task
     visited_tasks = set()
@@ -100,14 +114,10 @@ def collect_async_trace():
     
     # Collect current call stack (only frames within the current task)
     stack_frames = traceback.extract_stack()
-    current_stack = []
-    
-    # Get the task creation context
     task_info = task_parents.get(current_task, {})
     call_trace = task_info.get('call_trace', [])
     
-    # If this task has a call_trace, find where it starts in the stack
-    # Frames that appear BEFORE the creation point belong to parent tasks
+    # Find where the current task starts in the stack
     creation_frame_indices = set()
     if call_trace:
         for i, frame in enumerate(stack_frames):
@@ -116,15 +126,12 @@ def collect_async_trace():
                     frame.lineno == trace_frame['line']):
                     creation_frame_indices.add(i)
     
-    # Collect only frames AFTER the creation point (i.e., within current task)
     max_creation_idx = max(creation_frame_indices) if creation_frame_indices else -1
     
+    current_stack = []
     for i, frame in enumerate(stack_frames):
-        # Only collect frames after the creation point
         if i <= max_creation_idx:
             continue
-            
-        # Skip internal tracing code
         if frame.filename.endswith('main.py') and frame.name not in [
             'collect_async_trace', 'print_async_trace', 'print_trace'
         ]:
@@ -135,91 +142,124 @@ def collect_async_trace():
                 'filename': frame.filename
             })
     
+    # Now flatten everything into a simple linear trace
+    frames = []
+    indent = 0
+    
+    for task_data in task_chain:
+        call_trace = task_data['call_trace']
+        is_current = task_data['is_current']
+        
+        # If no call trace, it's a root task
+        if not call_trace:
+            frames.append({
+                'type': 'task_root',
+                'name': task_data['name'],
+                'is_current': is_current,
+                'is_done': task_data['is_done'],
+                'indent': indent,
+                'task': task_data['task']
+            })
+            indent += 1
+            
+            # Add current stack frames if this is the current root task
+            if is_current:
+                for frame_data in current_stack:
+                    frames.append({
+                        'type': 'call',
+                        'name': frame_data['name'],
+                        'line': frame_data['line'],
+                        'code': frame_data.get('code'),
+                        'filename': frame_data.get('filename'),
+                        'indent': indent
+                    })
+                    indent += 1
+        else:
+            # Add call trace frames
+            for j, trace_frame in enumerate(call_trace):
+                is_last = j == len(call_trace) - 1
+                
+                if is_last:
+                    # This is the task creation point
+                    frames.append({
+                        'type': 'task_created',
+                        'creator': trace_frame['name'],
+                        'task_name': task_data['name'],
+                        'is_current': is_current,
+                        'indent': indent,
+                        'task': task_data['task']
+                    })
+                    indent += 1
+                    
+                    # Add current stack frames if this is the current task
+                    if is_current:
+                        for frame_data in current_stack:
+                            frames.append({
+                                'type': 'call',
+                                'name': frame_data['name'],
+                                'line': frame_data['line'],
+                                'code': frame_data.get('code'),
+                                'filename': frame_data.get('filename'),
+                                'indent': indent
+                            })
+                            indent += 1
+                else:
+                    # Regular call frame
+                    frames.append({
+                        'type': 'call',
+                        'name': trace_frame['name'],
+                        'line': trace_frame['line'],
+                        'code': trace_frame.get('code'),
+                        'filename': trace_frame.get('filename'),
+                        'indent': indent
+                    })
+                    indent += 1
+    
     return {
-        'task_chain': task_chain,
-        'current_stack': current_stack,
+        'frames': frames,
         'current_task': current_task
     }
 
 
 def print_async_trace(trace_data):
     """Print the structured async trace data."""
-    task_chain = trace_data['task_chain']
-    current_stack = trace_data['current_stack']
-    current_task = trace_data['current_task']
+    frames = trace_data['frames']
     
-    # Print the unified async execution path
     print("📋 Async Execution Path:")
     
-    indent_level = 0
-    for task_data in task_chain:
-        name = task_data['name']
-        call_trace = task_data['call_trace']
-        is_current = task_data['is_current']
+    for frame in frames:
+        indent = "  " * frame['indent']
+        frame_type = frame['type']
         
-        # If no call trace, this is likely the root task
-        if not call_trace:
-            indent = "  " * indent_level
-            if is_current:
-                marker = "🟢"
-                status = " [current task, root]"
-            else:
-                marker = "⚪"
-                status = " [root task]"
-            print(f"{indent}{marker} {name}{status}")
-            indent_level += 1
+        if frame_type == 'task_root':
+            # Root task (created by asyncio.run)
+            marker = "🟢" if frame['is_current'] else "⚪"
+            status = " [current task, root]" if frame['is_current'] else " [root task]"
+            print(f"{indent}{marker} {frame['name']}{status}")
             
-            # For current root task, show the current call stack inline
-            if is_current and current_stack:
-                for frame_data in current_stack:
-                    indent = "  " * indent_level
-                    frame_name = frame_data['name']
-                    frame_line = frame_data['line']
-                    frame_code = frame_data.get('code', '')
-                    
-                    print(f"{indent}→ {frame_name}() at line {frame_line}")
-                    if frame_code:
-                        print(f"{indent}  {frame_code.strip()[:60]}")
-                    indent_level += 1
-            continue
-        
-        # Show each frame in the call trace
-        for j, trace_frame in enumerate(call_trace):
-            indent = "  " * indent_level
-            frame_name = trace_frame['name']
-            frame_line = trace_frame['line']
-            frame_code = trace_frame.get('code', '')
+        elif frame_type == 'task_created':
+            # Task creation point
+            marker = "🟢" if frame['is_current'] else "⚪"
+            status = " [current task]" if frame['is_current'] else ""
+            print(f"{indent}{marker} {frame['creator']}() created task '{frame['task_name']}'{status}")
             
-            # Last frame in the trace is where the task was created
-            if j == len(call_trace) - 1:
-                if is_current:
-                    marker = "🟢"
-                    status = " [current task]"
-                else:
-                    marker = "⚪"
-                    status = ""
-                print(f"{indent}{marker} {frame_name}() created task '{name}'{status}")
-                
-                # For current task, continue with the current call stack
-                if is_current and current_stack:
-                    indent_level += 1
-                    for frame_data in current_stack:
-                        indent = "  " * indent_level
-                        call_name = frame_data['name']
-                        call_line = frame_data['line']
-                        call_code = frame_data.get('code', '')
-                        
-                        print(f"{indent}→ {call_name}() at line {call_line}")
-                        if call_code:
-                            print(f"{indent}  {call_code.strip()[:60]}")
-                        indent_level += 1
-            else:
-                print(f"{indent}→ {frame_name}() at line {frame_line}")
+        elif frame_type == 'call':
+            # Regular function call
+            name = frame['name']
+            line = frame['line']
+            code = frame.get('code', '')
+            filename = frame.get('filename', '')
             
-            if frame_code and j < len(call_trace) - 1:
-                print(f"{indent}  {frame_code.strip()[:75]}")
+            # Optionally show shortened filename
+            file_display = ""
+            if filename:
+                # Show just the filename, not the full path
+                import os
+                file_display = f" [{os.path.basename(filename)}]"
             
-            indent_level += 1
+            print(f"{indent}→ {name}() at line {line}{file_display}")
+            if code:
+                print(f"{indent}  {code.strip()[:60]}")
 
 
 def print_trace():
@@ -237,21 +277,31 @@ async def example_structured_trace():
     
     print("\n=== Using Structured Trace Data ===")
     print(f"📊 Current task: {trace_data['current_task'].get_name()}")
-    print(f"📊 Task chain depth: {len(trace_data['task_chain'])}")
-    print(f"📊 Current stack depth: {len(trace_data['current_stack'])}")
+    print(f"📊 Total frames: {len(trace_data['frames'])}")
     
-    # You can now process this data however you want
-    # For example, export to JSON, filter specific tasks, etc.
+    # The trace is now a simple flat list - easy to analyze!
     
-    print("\n📋 Task Chain (ancestry):")
-    for task_data in trace_data['task_chain']:
-        marker = "🟢" if task_data['is_current'] else "⚪"
-        status = "done" if task_data['is_done'] else "running"
-        print(f"  {marker} {task_data['name']} ({status})")
+    print("\n📋 All Frames:")
+    for i, frame in enumerate(trace_data['frames']):
+        indent = "  " * frame['indent']
+        if frame['type'] == 'task_root':
+            print(f"{indent}[{i}] Task Root: {frame['name']}")
+        elif frame['type'] == 'task_created':
+            print(f"{indent}[{i}] Task Created: {frame['task_name']} by {frame['creator']}()")
+        elif frame['type'] == 'call':
+            print(f"{indent}[{i}] Call: {frame['name']}() at line {frame['line']}")
     
-    print("\n📞 Current Call Stack:")
-    for frame in trace_data['current_stack']:
-        print(f"  → {frame['name']}() at line {frame['line']}")
+    # Easy to filter - e.g., find all task creation points
+    print("\n🔍 Task Creation Points:")
+    for frame in trace_data['frames']:
+        if frame['type'] == 'task_created':
+            print(f"  - {frame['task_name']} created by {frame['creator']}()")
+    
+    # Easy to find current execution point
+    print("\n📍 Current Execution:")
+    for frame in trace_data['frames']:
+        if frame.get('is_current'):
+            print(f"  - In {frame.get('task_name') or frame.get('name')}")
 
 
 # Run example
