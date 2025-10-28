@@ -1,7 +1,40 @@
 [project]
 name = "async-trace"
 version = "0.1.0"
-description = "Add your description here"
+description = "Provides call stack frames for asyncio tasks, similar to how Python's traceback provides frames for synchronous code"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Artur Sharipov", email = "artur@r4u.dev"}
+]
+keywords = ["async", "asyncio", "debug", "trace", "frames", "debugging", "profiling"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: AsyncIO",
+]
+
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/r4u-dev/async-trace"
+Repository = "https://github.com/r4u-dev/async-trace"
+Documentation = "https://github.com/r4u-dev/async-trace#readme"
+"Bug Tracker" = "https://github.com/r4u-dev/async-trace/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["async_trace"]

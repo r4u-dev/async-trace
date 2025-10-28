@@ -1,54 +1,43 @@
 """
-Async Call Tracing
+Core async tracing functionality.
 
-Tracks async task creation and execution paths to help debug async code.
-
-Public API:
-  - collect_async_trace() -> dict: Collect structured trace data
-  - print_async_trace(trace_data): Print formatted trace
-  - print_trace(): Convenience function (collect + print)
-
-Trace data structure (flat list of frames, innermost → outermost):
-  {
-    'frames': [
-      {
-        'name': str,                    # Function/task name
-        'line': int | None,             # Line number (None for root task)
-        'filename': str | None,         # Full file path (None for root task)
-        'indent': int,                  # 0=innermost, higher=outermost
-        'task': <Task object> | None,   # Task object if this frame creates/is a task
-      }
-    ],
-    'current_task': <Task object>
-  }
-  
-  Notes:
-  - Frames are ordered from innermost (current execution) to outermost (root)
-  - Task boundaries are marked by frames where 'task' is not None
-  - All frames have the same structure (some fields may be None)
+This module implements the async call tracing by monkey-patching asyncio.create_task()
+to track parent-child relationships between async tasks.
 """
-import asyncio, traceback
+
+import asyncio
+import traceback
+import os
+from typing import Dict, List, Optional, Any
+
 
 # Track parent relationships and stack traces
-task_parents = {}
+_task_parents: Dict[asyncio.Task, Dict[str, Any]] = {}
 
-def capture_stack(skip=2):
+# Store original create_task function
+_orig_create_task = None
+_tracing_enabled = False
+
+
+def _capture_stack(skip: int = 2) -> List[str]:
     """Capture readable stack trace lines."""
     return traceback.format_list(traceback.extract_stack()[:-skip])
 
-# Keep reference to the original function
-_orig_create_task = asyncio.create_task
 
-def traced_create_task(coro, *args, **kwargs):
+def _traced_create_task(coro, *args, **kwargs) -> asyncio.Task:
     """Intercept asyncio.create_task() to record parent relationships."""
     parent = asyncio.current_task()
-    stack = capture_stack()
+    stack = _capture_stack()
     
     # Also capture the current Python call stack at creation time
     current_stack = traceback.extract_stack()
     call_trace = []
     for frame in reversed(current_stack):
-        if frame.filename.endswith('main.py') and frame.name not in ['traced_create_task', 'capture_stack']:
+        # Skip internal tracing functions
+        if frame.name in ['_traced_create_task', '_capture_stack']:
+            continue
+        # Only include frames from user code (not from asyncio internals)
+        if not frame.filename.endswith(('asyncio/tasks.py', 'asyncio/base_events.py')):
             call_trace.insert(0, {
                 'name': frame.name,
                 'line': frame.lineno,
@@ -57,36 +46,56 @@ def traced_create_task(coro, *args, **kwargs):
             })
     
     task = _orig_create_task(coro, *args, **kwargs)
-    task_parents[task] = {
+    _task_parents[task] = {
         "parent": parent,
         "stack": stack,
-        "call_trace": call_trace  # Store the calling path
+        "call_trace": call_trace
     }
     return task
 
-# Apply monkey patch
-asyncio.create_task = traced_create_task
 
-async def inner_task():
-    print("\n=== In Inner Task ===")
-    print_trace()
-    await asyncio.sleep(1)
-
-async def worker():
-    await inner_task()
-
-async def sub_task():
-    t = asyncio.create_task(worker())
-    await t
-
-async def main():
-    await sub_task()
+def enable_tracing():
+    """Enable async call tracing by monkey-patching asyncio.create_task()."""
+    global _orig_create_task, _tracing_enabled
     
-    print("\n=== In Main ===")
-    print_trace()
+    if _tracing_enabled:
+        return
+    
+    _orig_create_task = asyncio.create_task
+    asyncio.create_task = _traced_create_task
+    _tracing_enabled = True
 
-def collect_async_trace():
-    """Collect structured async call trace data as a flat list of frames."""
+
+def disable_tracing():
+    """Disable async call tracing by restoring the original asyncio.create_task()."""
+    global _tracing_enabled
+    
+    if not _tracing_enabled:
+        return
+    
+    asyncio.create_task = _orig_create_task
+    _tracing_enabled = False
+
+
+def collect_async_trace() -> Dict[str, Any]:
+    """
+    Collect structured async call trace data as a flat list of frames.
+    
+    Returns:
+        dict: Trace data structure with the following keys:
+            - 'frames': List of frame dicts (innermost → outermost), each containing:
+                - 'name': str - Function/task name
+                - 'line': int | None - Line number (None for root task)
+                - 'filename': str | None - Full file path (None for root task)
+                - 'indent': int - 0=innermost, higher=outermost
+                - 'task': Task | None - Task object if this frame creates/is a task
+            - 'current_task': Task - The current asyncio task
+    
+    Notes:
+        - Frames are ordered from innermost (current execution) to outermost (root)
+        - Task boundaries are marked by frames where 'task' is not None
+        - All frames have the same structure (some fields may be None)
+    """
     current_task = asyncio.current_task()
     
     # Build the task chain hierarchy first
@@ -95,7 +104,7 @@ def collect_async_trace():
     visited_tasks = set()
     
     while task and task not in visited_tasks:
-        task_info = task_parents.get(task, {})
+        task_info = _task_parents.get(task, {})
         
         task_data = {
             'task': task,
@@ -113,7 +122,7 @@ def collect_async_trace():
     
     # Collect current call stack (only frames within the current task)
     stack_frames = traceback.extract_stack()
-    task_info = task_parents.get(current_task, {})
+    task_info = _task_parents.get(current_task, {})
     call_trace = task_info.get('call_trace', [])
     
     # Find where the current task starts in the stack
@@ -131,9 +140,11 @@ def collect_async_trace():
     for i, frame in enumerate(stack_frames):
         if i <= max_creation_idx:
             continue
-        if frame.filename.endswith('main.py') and frame.name not in [
-            'collect_async_trace', 'print_async_trace', 'print_trace'
-        ]:
+        # Skip internal tracing functions
+        if frame.name in ['collect_async_trace', 'print_async_trace', 'print_trace']:
+            continue
+        # Only include user code frames
+        if not frame.filename.endswith(('tracer.py', 'asyncio/tasks.py', 'asyncio/base_events.py')):
             current_stack.append({
                 'name': frame.name,
                 'line': frame.lineno,
@@ -223,8 +234,13 @@ def collect_async_trace():
     }
 
 
-def print_async_trace(trace_data):
-    """Print the structured async trace data (inner → outer)."""
+def print_async_trace(trace_data: Dict[str, Any]):
+    """
+    Print the structured async trace data (inner → outer).
+    
+    Args:
+        trace_data: The trace data dict returned by collect_async_trace()
+    """
     frames = trace_data['frames']
     for frame in frames:
         indent = "  " * frame['indent']
@@ -237,7 +253,6 @@ def print_async_trace(trace_data):
             # Show shortened filename if available
             file_display = ""
             if filename:
-                import os
                 file_display = f" [{os.path.basename(filename)}]"
             
             print(f"{indent}↑ {name}() at line {line}{file_display}")
@@ -247,52 +262,7 @@ def print_async_trace(trace_data):
 
 
 def print_trace():
-    """Collect and print the async call trace."""
+    """Convenience function to collect and print the async call trace."""
     trace_data = collect_async_trace()
     print_async_trace(trace_data)
 
-# Example: Using structured trace data
-async def example_structured_trace():
-    """Example showing how to use structured trace data."""
-    await sub_task()
-    
-    # Collect structured data without printing
-    trace_data = collect_async_trace()
-    
-    print("\n=== Using Structured Trace Data ===")
-    print(f"📊 Current task: {trace_data['current_task'].get_name()}")
-    print(f"📊 Total frames: {len(trace_data['frames'])}")
-    
-    # All frames have the same structure - super simple!
-    
-    print("\n📋 Frames (innermost → outermost):")
-    for i, frame in enumerate(trace_data['frames']):
-        indent = "  " * frame['indent']
-        line_info = f" at line {frame['line']}" if frame['line'] else ""
-        task_marker = " [TASK]" if frame['task'] else ""
-        print(f"{indent}[{i}] {frame['name']}(){line_info}{task_marker}")
-    
-    # First frame is the innermost (current execution point)
-    print("\n📍 Current Execution (first frame):")
-    if trace_data['frames']:
-        first = trace_data['frames'][0]
-        line_info = f" at line {first['line']}" if first['line'] else ""
-        print(f"  → {first['name']}(){line_info}")
-    
-    # Last frame is the outermost (root)
-    print("\n🌳 Root Task (last frame):")
-    if trace_data['frames']:
-        last = trace_data['frames'][-1]
-        print(f"  → {last['name']}")
-    
-    # Easy to filter - e.g., find all task boundaries
-    print("\n🔍 Task Boundaries:")
-    for frame in trace_data['frames']:
-        if frame['task']:
-            line_info = f" at line {frame['line']}" if frame['line'] else ""
-            print(f"  - {frame['name']}(){line_info} → Task: {frame['task'].get_name()}")
-
-
-# Run example
-if __name__ == "__main__":
-    asyncio.run(main())
