@@ -8,6 +8,7 @@ When debugging synchronous Python code, you use `traceback` to see the call stac
 
 - 📚 **Stack Frames for Async**: Get call stack frames for asyncio tasks, similar to `traceback` for sync code
 - 🔍 **Complete Call Path**: See the full execution path from current task back to the root
+- 🧵 **Executor Support**: Trace calls across async/sync boundaries with `run_in_executor`
 - 📊 **Structured Frame Data**: Access frames programmatically with line numbers, filenames, and task info
 - 🎯 **Zero Configuration**: Just import and call `print_trace()` - that's it!
 - 🪶 **Lightweight**: Minimal overhead, no external dependencies
@@ -114,14 +115,52 @@ The `collect_async_trace()` function returns a dict with:
             'filename': str | None,   # File path (None for root)
             'indent': int,            # Indentation level (0 = innermost)
             'task': Task | None,      # Task object if this creates a task
+            'is_executor': bool,      # True if this is an executor call boundary
         },
         # ... more frames (innermost → outermost)
     ],
-    'current_task': Task  # The current asyncio task
+    'current_task': Task | None,  # The current asyncio task (None if in executor)
+    'in_executor': bool           # True if currently running in an executor thread
 }
 ```
 
 ## Advanced Usage
+
+### Tracing Across Executor Boundaries
+
+`async-trace` can trace calls that cross the async/sync boundary when using `asyncio.run_in_executor()`:
+
+```python
+import asyncio
+import time
+from async_trace import print_trace
+
+def blocking_work():
+    """This runs in a thread pool, but we can still trace it!"""
+    time.sleep(0.1)
+    print_trace()  # Shows the async call that led here!
+    return "done"
+
+async def worker():
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, blocking_work)
+    return result
+
+async def main():
+    await worker()
+
+asyncio.run(main())
+```
+
+Output shows the complete path including the executor boundary:
+```
+↑ blocking_work() at line 7 [example.py]
+  ↑ worker() at line 14 [example.py] [EXECUTOR]
+    ↑ main() at line 19 [example.py]
+      ↑ Task-1
+```
+
+The `[EXECUTOR]` marker indicates where the call crossed from async to sync code running in a thread pool.
 
 ### Enable/Disable Tracing
 
@@ -224,10 +263,11 @@ Python's `traceback` module can show you the call stack for synchronous code bec
 
 `async-trace` solves this by:
 1. **Tracking task creation**: Monkey-patches `asyncio.create_task()` to record where each task was created
-2. **Capturing call stacks**: Records the full call stack at each task creation point
-3. **Reconstructing the path**: When you call `print_trace()`, it walks up the task chain to show the complete execution path
+2. **Tracking executor calls**: Monkey-patches `loop.run_in_executor()` to track async-to-sync boundaries
+3. **Capturing call stacks**: Records the full call stack at each task creation and executor call point
+4. **Reconstructing the path**: When you call `print_trace()`, it walks up the task chain and across executor boundaries to show the complete execution path
 
-This gives you the same debugging power for async code that Python's traceback provides for sync code.
+This gives you the same debugging power for async code that Python's traceback provides for sync code, even when crossing thread boundaries.
 
 ### Benefits:
 - **Accurate**: Captures the actual task creation relationships
@@ -241,6 +281,7 @@ See the [`examples/`](examples/) directory for more examples:
 - `basic_example.py` - Simple tracing example
 - `structured_trace.py` - Using structured trace data
 - `parallel_tasks.py` - Tracing parallel/concurrent tasks
+- `executor_example.py` - Tracing across executor boundaries with `run_in_executor`
 
 ## API Reference
 

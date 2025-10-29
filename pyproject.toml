@@ -1,6 +1,6 @@
 [project]
 name = "async-trace"
-version = "0.1.1"
+version = "0.1.2"
 description = "Provides call stack frames for asyncio tasks, similar to how Python's traceback provides frames for synchronous code"
 readme = "README.md"
 requires-python = ">=3.10"
