@@ -8,11 +8,15 @@ of async tasks.
 import asyncio
 from async_trace import print_trace
 
+def sync_function():
+    """Sync function that prints the call trace."""
+    print("\n=== In Sync Function ===")
+    print_trace()
+
 
 async def inner_task():
     """Innermost task that prints the call trace."""
-    print("\n=== In Inner Task ===")
-    print_trace()
+    sync_function()
     await asyncio.sleep(0.1)
 
 

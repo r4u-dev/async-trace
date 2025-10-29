@@ -11,7 +11,7 @@ When debugging synchronous Python code, you use `traceback` to see the call stac
 - 📊 **Structured Frame Data**: Access frames programmatically with line numbers, filenames, and task info
 - 🎯 **Zero Configuration**: Just import and call `print_trace()` - that's it!
 - 🪶 **Lightweight**: Minimal overhead, no external dependencies
-- 🐍 **Python 3.8+**: Works with modern Python versions
+- 🐍 **Python 3.10+**: Works with modern Python versions
 
 ## Installation
 
@@ -265,7 +265,7 @@ Disable async call tracing to avoid overhead.
 
 ## Requirements
 
-- Python 3.8 or higher
+- Python 3.10 or higher
 - No external dependencies (uses only the standard library)
 
 ## Contributing
@@ -281,5 +281,5 @@ MIT License - see LICENSE file for details.
 ### 0.1.0 (Initial Release)
 - Basic async call tracing functionality
 - Structured trace data API
-- Support for Python 3.8+
+- Support for Python 3.10+
 

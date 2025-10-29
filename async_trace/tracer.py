@@ -7,8 +7,7 @@ to track parent-child relationships between async tasks.
 
 import asyncio
 import traceback
-import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 
 
 # Track parent relationships and stack traces
@@ -253,7 +252,7 @@ def print_async_trace(trace_data: Dict[str, Any]):
             # Show shortened filename if available
             file_display = ""
             if filename:
-                file_display = f" [{os.path.basename(filename)}]"
+                file_display = f" [{filename}]"
             
             print(f"{indent}↑ {name}() at line {line}{file_display}")
         else:
